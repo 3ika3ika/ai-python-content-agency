@@ -108,7 +108,7 @@ content_creation_agency/
 
 1. **Terminal Demo Mode**
 ```bash
-python content_creation_agency/app.py
+python content_creation_agency/agency.py
 ```
 
 2. **Using Individual Tools**
