@@ -190,21 +190,20 @@
                     "parameters": {
                         "properties": {
                             "channel_input": {
-                                "description": "Channel URL, ID, or name to analyze",
+                                "default": "UCbmCqH_WOUviDUsV83qloZQ",
+                                "description": "Channel URL, ID, or name to analyze (defaults to channel from .env)",
                                 "title": "Channel Input",
                                 "type": "string"
                             },
                             "metric_type": {
-                                "description": "Type of metrics to analyze (statistics, videos, playlists)",
+                                "default": "videos",
+                                "description": "Type of analysis (statistics, videos, playlists)",
                                 "title": "Metric Type",
                                 "type": "string"
                             }
                         },
-                        "required": [
-                            "channel_input",
-                            "metric_type"
-                        ],
-                        "type": "object"
+                        "type": "object",
+                        "required": []
                     },
                     "strict": false
                 },
@@ -234,11 +233,11 @@
             {
                 "function": {
                     "name": "CommentSentiment",
-                    "description": "Analyzes sentiment in video comments",
+                    "description": "Analyzes sentiment in video comments for any YouTube video",
                     "parameters": {
                         "properties": {
                             "video_id": {
-                                "description": "ID or URL of the video to analyze comments from",
+                                "description": "Video ID or URL to analyze comments from",
                                 "title": "Video Id",
                                 "type": "string"
                             }
@@ -255,19 +254,18 @@
             {
                 "function": {
                     "name": "CompetitorAnalysis",
-                    "description": "Analyzes competitor channels and their public content",
+                    "description": "Analyzes competitor YouTube channels",
                     "parameters": {
                         "properties": {
-                            "competitor_channel_id": {
-                                "description": "ID or URL of the competitor channel to analyze",
-                                "title": "Competitor Channel Id",
+                            "channel_id": {
+                                "default": "UCbmCqH_WOUviDUsV83qloZQ",
+                                "description": "Channel ID to analyze (defaults to channel from .env)",
+                                "title": "Channel Id",
                                 "type": "string"
                             }
                         },
-                        "required": [
-                            "competitor_channel_id"
-                        ],
-                        "type": "object"
+                        "type": "object",
+                        "required": []
                     },
                     "strict": false
                 },

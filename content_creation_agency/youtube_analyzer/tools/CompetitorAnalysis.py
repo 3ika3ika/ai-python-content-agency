@@ -8,22 +8,30 @@ import json
 from datetime import datetime
 from typing import Dict, Any
 
+# ANSI color codes
+BLUE = '\033[94m'
+GREEN = '\033[92m'
+YELLOW = '\033[93m'
+RED = '\033[91m'
+ENDC = '\033[0m'
+BOLD = '\033[1m'
+
 load_dotenv()
 
 youtube = build('youtube', 'v3', developerKey=os.getenv('YOUTUBE_API_KEY'))
+default_channel = os.getenv('DEFAULT_CHANNEL_ID', 'UCbmCqH_WOUviDUsV83qloZQ')  # Fallback to your channel if not set
 
 class CompetitorAnalysis(BaseTool):
     """
-    Analyzes competitor channels and their public content
+    Analyzes competitor YouTube channels
     """
-    competitor_channel_id: str = Field(
-        ..., 
-        description="ID or URL of the competitor channel to analyze"
+    channel_id: str = Field(
+        default=default_channel,
+        description="Channel ID to analyze (defaults to channel from .env)"
     )
     
-    def _format_number(self, num_str):
+    def _format_number(self, num: int) -> str:
         """Format large numbers for readability"""
-        num = int(num_str)
         if num >= 1000000:
             return f"{num/1000000:.1f}M"
         elif num >= 1000:
@@ -89,83 +97,65 @@ class CompetitorAnalysis(BaseTool):
 
     def run(self):
         """
-        Analyzes a competitor's channel and their recent videos
+        Analyzes a competitor's channel and recent videos
         """
         try:
-            channel_id = self._extract_channel_id(self.competitor_channel_id)
-            if not channel_id:
-                return "❌ Error: Invalid channel ID or URL provided"
-
+            # Get channel details
             channel_response = youtube.channels().list(
-                part="snippet,statistics,brandingSettings",
-                id=channel_id
+                part="snippet,statistics,contentDetails",
+                id=self.channel_id
             ).execute()
             
             if not channel_response.get('items'):
-                return f"❌ Error: No channel found with ID {channel_id}"
-
-            videos_response = youtube.search().list(
+                return f"{RED}❌ Error: Channel not found{ENDC}"
+                
+            channel = channel_response['items'][0]
+            stats = channel['statistics']
+            
+            # Format output
+            output = [
+                f"\n{BOLD}📊 CHANNEL ANALYSIS{ENDC}",
+                "=" * 50,
+                f"\n{BLUE}📺 Channel:{ENDC} {channel['snippet']['title']}",
+                f"{BLUE}👥 Subscribers:{ENDC} {self._format_number(int(stats.get('subscriberCount', 0)))}",
+                f"{BLUE}🎥 Total Videos:{ENDC} {self._format_number(int(stats.get('videoCount', 0)))}",
+                f"{BLUE}👀 Total Views:{ENDC} {self._format_number(int(stats.get('viewCount', 0)))}",
+                "",
+                f"{BOLD}📝 Description:{ENDC}",
+                f"{channel['snippet']['description'][:200]}..."  # Truncate long descriptions
+            ]
+            
+            # Get recent videos
+            playlist_id = channel['contentDetails']['relatedPlaylists']['uploads']
+            videos_response = youtube.playlistItems().list(
                 part="snippet",
-                channelId=channel_id,
-                order="date",
-                type="video",
+                playlistId=playlist_id,
                 maxResults=10
             ).execute()
             
             if videos_response.get('items'):
-                video_ids = [item['id']['videoId'] for item in videos_response['items']]
-                videos_stats = youtube.videos().list(
-                    part="statistics",
-                    id=','.join(video_ids)
-                ).execute()
-            else:
-                videos_stats = {'items': []}
-
-            channel_info = channel_response['items'][0]
-            
-            data = {
-                "Channel Analysis": {
-                    "Title": channel_info['snippet']['title'],
-                    "Subscribers": self._format_number(channel_info['statistics']['subscriberCount']),
-                    "Total Videos": self._format_number(channel_info['statistics']['videoCount']),
-                    "Total Views": self._format_number(channel_info['statistics']['viewCount']),
-                    "Description": channel_info['snippet']['description'][:200] + "..."
-                },
-                "Recent Videos Analysis": []
-            }
-
-            for video in videos_response.get('items', []):
-                video_stats = next(
-                    (stats for stats in videos_stats['items'] 
-                     if stats['id'] == video['id']['videoId']), 
-                    {'statistics': {}}
-                )
+                output.extend([
+                    "",
+                    f"{BOLD}🎬 RECENT VIDEOS{ENDC}"
+                ])
                 
-                video_info = {
-                    "Title": video['snippet']['title'],
-                    "Published": self._format_date(video['snippet']['publishedAt']),
-                    "Views": self._format_number(video_stats.get('statistics', {}).get('viewCount', '0')),
-                    "Likes": self._format_number(video_stats.get('statistics', {}).get('likeCount', '0')),
-                    "Comments": self._format_number(video_stats.get('statistics', {}).get('commentCount', '0')),
-                    "URL": f"https://youtube.com/watch?v={video['id']['videoId']}"
-                }
-                data["Recent Videos Analysis"].append(video_info)
-
-            return self._format_output(data)
-
+                for item in videos_response['items']:
+                    video = item['snippet']
+                    output.extend([
+                        f"\n• {video['title']}",
+                        f"  Published: {video['publishedAt'][:10]}"
+                    ])
+            
+            return "\n".join(output)
+            
         except Exception as e:
-            return f"❌ Error analyzing competitor: {str(e)}"
+            return f"{RED}❌ Error analyzing channel: {str(e)}{ENDC}"
 
 if __name__ == "__main__":
-    test_channels = [
-        "UCWN3xxRkmTPmbKwht9FuE5A",  # Siraj Raval
-        "https://www.youtube.com/channel/UCbmCqH_WOUviDUsV83qloZQ"  # Your channel
-    ]
+    # Test the tool
+    tool = CompetitorAnalysis()  # Will use default channel from .env
+    print(tool.run())
     
-    for channel in test_channels:
-        print(f"\n🔍 Analyzing channel: {channel}")
-        print("=" * 80)
-        tool = CompetitorAnalysis(competitor_channel_id=channel)
-        result = tool.run()
-        print(result)
-        print("=" * 80) 
+    # Test with a different channel
+    tool = CompetitorAnalysis(channel_id="UCWN3xxRkmTPmbKwht9FuE5A")  # Siraj Raval's channel
+    print(tool.run()) 

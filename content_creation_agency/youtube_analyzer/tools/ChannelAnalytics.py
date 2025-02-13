@@ -18,20 +18,21 @@ UNDERLINE = '\033[4m'
 
 load_dotenv()
 
-CHANNEL_ID = "UCX6OQ3DkcsbYNE6H8uQQuVA"  # MrBeast's channel ID
+# Initialize YouTube API and get default channel
 youtube = build('youtube', 'v3', developerKey=os.getenv('YOUTUBE_API_KEY'))
+default_channel = os.getenv('DEFAULT_CHANNEL_ID')  # Get channel ID from .env
 
 class ChannelAnalytics(BaseTool):
     """
     Analyzes YouTube channel statistics and public data
     """
     channel_input: str = Field(
-        ..., 
-        description="Channel URL, ID, or name to analyze"
+        default=default_channel,
+        description="Channel URL, ID, or name to analyze (defaults to channel from .env)"
     )
     metric_type: str = Field(
-        ..., 
-        description="Type of metrics to analyze (statistics, videos, playlists)"
+        default="videos",
+        description="Type of analysis (statistics, videos, playlists)"
     )
     
     def _format_number(self, num_str: str) -> str:
@@ -122,53 +123,48 @@ class ChannelAnalytics(BaseTool):
 
     def _extract_channel_id(self, channel_input: str) -> str:
         """Extract channel ID from various input formats"""
-        # If it's already a channel ID
-        if channel_input.startswith('UC') and len(channel_input) == 24:
-            return channel_input
-            
-        # If it's a channel URL
-        import re
-        patterns = [
-            r'youtube\.com/channel/(UC[\w-]{22})',
-            r'youtube\.com/c/([^/\n?]+)',
-            r'youtube\.com/@([^/\n?]+)'
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, channel_input)
-            if match:
-                if pattern.startswith('youtube.com/channel/'):
-                    return match.group(1)
-                else:
-                    # Search for channel by custom URL or handle
-                    try:
-                        response = youtube.search().list(
-                            part="snippet",
-                            q=match.group(1),
-                            type="channel",
-                            maxResults=1
-                        ).execute()
-                        
-                        if response.get('items'):
-                            return response['items'][0]['snippet']['channelId']
-                    except Exception:
-                        pass
-        
-        # If it's a channel name/handle, search for it
         try:
+            # If it's already the default channel ID, return it
+            if channel_input == default_channel:
+                return channel_input
+                
+            # If it's a channel ID
+            if channel_input.startswith('UC'):
+                return channel_input
+                
+            # If it's a URL
+            if 'youtube.com' in channel_input:
+                if '/channel/' in channel_input:
+                    return channel_input.split('/channel/')[1].split('/')[0]
+                elif '/@' in channel_input:
+                    # Get channel by handle
+                    response = youtube.search().list(
+                        part="snippet",
+                        q=channel_input,
+                        type="channel",
+                        maxResults=1,
+                        relevanceLanguage="en"
+                    ).execute()
+                    if response.get('items'):
+                        return response['items'][0]['snippet']['channelId']
+            
+            # Search for channel
             response = youtube.search().list(
                 part="snippet",
                 q=channel_input,
                 type="channel",
-                maxResults=1
+                maxResults=1,
+                relevanceLanguage="en"
             ).execute()
             
             if response.get('items'):
                 return response['items'][0]['snippet']['channelId']
-        except Exception as e:
-            raise ValueError(f"Could not find channel: {str(e)}")
+                
+            return None
             
-        raise ValueError(f"Could not find channel: {channel_input}")
+        except Exception as e:
+            print(f"Error extracting channel ID: {str(e)}")
+            return None
 
     def run(self):
         """
@@ -177,44 +173,149 @@ class ChannelAnalytics(BaseTool):
         try:
             # Extract channel ID from input
             channel_id = self._extract_channel_id(self.channel_input)
+            if not channel_id:
+                return f"{RED}❌ Error: Channel not found{ENDC}"
             
-            if self.metric_type == "statistics":
-                response = youtube.channels().list(
-                    part="snippet,statistics",
-                    id=channel_id
-                ).execute()
-                return self._format_channel_statistics(response)
+            # Get channel details
+            channel_response = youtube.channels().list(
+                part="snippet,statistics,contentDetails,brandingSettings",
+                id=channel_id
+            ).execute()
             
-            elif self.metric_type == "videos":
-                videos = youtube.search().list(
-                    part="snippet",
-                    channelId=channel_id,
-                    order="date",
-                    type="video",
-                    maxResults=10
-                ).execute()
-                return self._format_videos_list(videos)
+            if not channel_response.get('items'):
+                return f"{RED}❌ Error: Channel data not accessible{ENDC}"
+                
+            channel = channel_response['items'][0]
+            stats = channel['statistics']
+            snippet = channel['snippet']
             
-            elif self.metric_type == "playlists":
-                playlists = youtube.playlists().list(
+            # Format basic info with enhanced sections
+            output = [
+                f"\n{BOLD}🎥 YOUTUBE CHANNEL ANALYSIS REPORT{ENDC}",
+                "=" * 70,
+                "",
+                f"{BOLD}📌 CHANNEL OVERVIEW{ENDC}",
+                f"{'─' * 30}",
+                f"{BLUE}Channel Name:{ENDC}     {snippet['title']}",
+                f"{BLUE}Created:{ENDC}          {self._format_date(snippet['publishedAt'])}",
+                f"{BLUE}Country:{ENDC}          {snippet.get('country', 'Not specified')}",
+                f"{BLUE}Language:{ENDC}         {snippet.get('defaultLanguage', 'Not specified')}",
+                "",
+                f"{BOLD}📊 PERFORMANCE METRICS{ENDC}",
+                f"{'─' * 30}",
+                f"{GREEN}Subscribers:{ENDC}     {self._format_number(int(stats.get('subscriberCount', 0)))}",
+                f"{GREEN}Total Videos:{ENDC}    {self._format_number(int(stats.get('videoCount', 0)))}",
+                f"{GREEN}Total Views:{ENDC}     {self._format_number(int(stats.get('viewCount', 0)))}",
+                f"{GREEN}Avg Views/Video:{ENDC} {self._format_number(int(int(stats.get('viewCount', 0)) / int(stats.get('videoCount', 1))))}",
+                "",
+                f"{BOLD}📝 CHANNEL DESCRIPTION{ENDC}",
+                f"{'─' * 30}",
+                f"{snippet.get('description', 'No description available')[:300]}...",
+                "",
+                f"{BOLD}🎯 CHANNEL TOPICS{ENDC}",
+                f"{'─' * 30}"
+            ]
+            
+            # Add topic categories if available
+            if 'topicDetails' in channel:
+                topics = channel['topicDetails'].get('topicCategories', [])
+                for topic in topics:
+                    topic_name = topic.split('/')[-1].replace('_', ' ')
+                    output.append(f"• {topic_name}")
+            else:
+                output.append("No topic categories available")
+            
+            # Get recent videos if requested
+            if self.metric_type == "videos":
+                playlist_id = channel['contentDetails']['relatedPlaylists']['uploads']
+                videos_response = youtube.playlistItems().list(
                     part="snippet,contentDetails",
-                    channelId=channel_id,
-                    maxResults=10
+                    playlistId=playlist_id,
+                    maxResults=5
                 ).execute()
-                return self._format_playlists(playlists)
+                
+                if videos_response.get('items'):
+                    output.extend([
+                        "",
+                        f"{BOLD}🎬 RECENT VIDEOS{ENDC}",
+                        f"{'─' * 30}"
+                    ])
+                    
+                    for i, item in enumerate(videos_response['items'], 1):
+                        video = item['snippet']
+                        video_id = item['contentDetails']['videoId']
+                        
+                        # Get video statistics
+                        video_stats = youtube.videos().list(
+                            part="statistics",
+                            id=video_id
+                        ).execute()
+                        
+                        if video_stats.get('items'):
+                            stats = video_stats['items'][0]['statistics']
+                            views = self._format_number(int(stats.get('viewCount', 0)))
+                            likes = self._format_number(int(stats.get('likeCount', 0)))
+                            comments = self._format_number(int(stats.get('commentCount', 0)))
+                            
+                            output.extend([
+                                f"\n{YELLOW}{i}. {video['title']}{ENDC}",
+                                f"   📅 Published: {self._format_date(video['publishedAt'])}",
+                                f"   👀 Views: {views}",
+                                f"   👍 Likes: {likes}",
+                                f"   💬 Comments: {comments}",
+                                f"   📝 Description: {video['description'][:100]}...",
+                                f"   🔗 Watch: https://youtube.com/watch?v={video_id}"
+                            ])
+                        else:
+                            output.extend([
+                                f"\n{YELLOW}{i}. {video['title']}{ENDC}",
+                                f"   📅 Published: {self._format_date(video['publishedAt'])}",
+                                f"   ⚠️ Statistics not available",
+                                f"   📝 Description: {video['description'][:100]}...",
+                                f"   🔗 Watch: https://youtube.com/watch?v={video_id}"
+                            ])
             
-            return f"{RED}❌ Invalid metric type specified. Use 'statistics', 'videos', or 'playlists'.{ENDC}"
+            # Add custom playlists if available
+            playlists_response = youtube.playlists().list(
+                part="snippet,contentDetails",
+                channelId=channel_id,
+                maxResults=3
+            ).execute()
+            
+            if playlists_response.get('items'):
+                output.extend([
+                    "",
+                    f"{BOLD}📑 FEATURED PLAYLISTS{ENDC}",
+                    f"{'─' * 30}"
+                ])
+                
+                for playlist in playlists_response['items']:
+                    output.extend([
+                        f"• {playlist['snippet']['title']}",
+                        f"  Videos: {playlist['contentDetails']['itemCount']}"
+                    ])
+            
+            # Add social links if available
+            if 'brandingSettings' in channel:
+                social_links = channel['brandingSettings'].get('channel', {}).get('customUrls', [])
+                if social_links:
+                    output.extend([
+                        "",
+                        f"{BOLD}🔗 SOCIAL LINKS{ENDC}",
+                        f"{'─' * 30}"
+                    ])
+                    for link in social_links:
+                        output.append(f"• {link}")
+            
+            return "\n".join(output)
             
         except Exception as e:
             return f"{RED}❌ Error analyzing channel: {str(e)}{ENDC}"
 
 if __name__ == "__main__":
-    print(f"\n{BOLD}🔍 YOUTUBE CHANNEL ANALYSIS{ENDC}")
+    # Test with default channel from .env
+    print(f"\n{BOLD}🔍 Testing channel analytics{ENDC}")
     print("=" * 50)
     
-    # Test all metric types
-    metric_types = ["statistics", "videos", "playlists"]
-    for metric in metric_types:
-        tool = ChannelAnalytics(channel_input="UCX6OQ3DkcsbYNE6H8uQQuVA", metric_type=metric)
-        print(tool.run())
-        print("\n" + "=" * 50) 
+    tool = ChannelAnalytics()
+    print(tool.run()) 

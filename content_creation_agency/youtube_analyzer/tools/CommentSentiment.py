@@ -18,17 +18,52 @@ UNDERLINE = '\033[4m'
 
 load_dotenv()
 
+# Initialize YouTube API
 youtube = build('youtube', 'v3', developerKey=os.getenv('YOUTUBE_API_KEY'))
+
+def get_all_comments(video_id: str, max_results: int = 100) -> list:
+    """Get all available comments for a video"""
+    try:
+        comments = []
+        next_page_token = None
+        
+        while len(comments) < max_results:
+            request = youtube.commentThreads().list(
+                part="snippet",
+                videoId=video_id,
+                textFormat="plainText",
+                maxResults=min(100, max_results - len(comments)),
+                pageToken=next_page_token,
+                order="relevance"
+            )
+            
+            response = request.execute()
+            
+            # Add comments from this page
+            for item in response.get('items', []):
+                comment = item['snippet']['topLevelComment']['snippet']
+                comments.append(comment)
+            
+            # Check if there are more pages
+            next_page_token = response.get('nextPageToken')
+            if not next_page_token or len(response.get('items', [])) == 0:
+                break
+        
+        return comments
+        
+    except Exception as e:
+        print(f"Error getting comments: {str(e)}")
+        return []
 
 class CommentSentiment(BaseTool):
     """
-    Analyzes sentiment in video comments
+    Analyzes sentiment in video comments for any YouTube video
     """
     video_id: str = Field(
         ..., 
-        description="ID or URL of the video to analyze comments from"
+        description="Video ID or URL to analyze comments from"
     )
-    
+
     def _extract_video_id(self, video_input: str) -> str:
         """Extract video ID from various input formats"""
         # If it's already a video ID
@@ -49,62 +84,39 @@ class CommentSentiment(BaseTool):
                 
         return video_input
 
-    def _format_date(self, date_str: str) -> str:
-        """Format date to readable format"""
-        date = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%SZ")
-        return date.strftime("%B %d, %Y")
-
-    def _get_video_details(self, video_id: str) -> Dict:
-        """Get video details for context"""
+    def run(self):
+        """
+        Analyzes sentiment of video comments
+        """
         try:
-            response = youtube.videos().list(
+            # Extract video ID from input
+            video_id = self._extract_video_id(self.video_id)
+            
+            # Get video details
+            video_response = youtube.videos().list(
                 part="snippet,statistics",
                 id=video_id
             ).execute()
             
-            if not response.get('items'):
-                return None
-                
-            return response['items'][0]
-        except Exception:
-            return None
-
-    def _format_sentiment(self, sentiment: float) -> str:
-        """Format sentiment score with color and emoji"""
-        if sentiment > 0.3:
-            return f"{GREEN}Positive 😊 ({sentiment:.2f}){ENDC}"
-        elif sentiment < -0.3:
-            return f"{RED}Negative 😠 ({sentiment:.2f}){ENDC}"
-        return f"{YELLOW}Neutral 😐 ({sentiment:.2f}){ENDC}"
-
-    def run(self):
-        """
-        Retrieves and analyzes sentiment of public comments on a video
-        """
-        try:
-            # Extract and validate video ID
-            video_id = self._extract_video_id(self.video_id)
+            if not video_response.get('items'):
+                return f"{RED}❌ Error: Video not found{ENDC}"
             
-            # Get video details first
-            video_details = self._get_video_details(video_id)
-            if not video_details:
-                return f"{RED}❌ Error: Video not found or not accessible{ENDC}"
-
+            video = video_response['items'][0]
+            
             # Get comments
-            comments_response = youtube.commentThreads().list(
-                part="snippet",
-                videoId=video_id,
-                textFormat="plainText",
-                maxResults=100
-            ).execute()
+            comments = get_all_comments(video_id, max_results=100)
             
-            if not comments_response.get('items'):
-                return f"{YELLOW}⚠️ No comments found for this video{ENDC}"
+            if not comments:
+                stats = video['statistics']
+                comment_count = int(stats.get('commentCount', 0))
+                if comment_count > 0:
+                    return f"{YELLOW}⚠️ Video has {comment_count} comments but couldn't retrieve them. This might be due to API limitations.{ENDC}"
+                else:
+                    return f"{YELLOW}⚠️ No comments found for this video{ENDC}"
 
             # Analyze sentiment
             sentiments = []
-            for item in comments_response['items']:
-                comment = item['snippet']['topLevelComment']['snippet']
+            for comment in comments:
                 analysis = TextBlob(comment['textDisplay'])
                 sentiments.append({
                     'text': comment['textDisplay'],
@@ -121,55 +133,83 @@ class CommentSentiment(BaseTool):
             # Format output
             output = [
                 f"\n{BOLD}💭 COMMENT SENTIMENT ANALYSIS{ENDC}",
-                "=" * 50,
-                f"\n{BLUE}📺 Video:{ENDC} {video_details['snippet']['title']}",
-                f"{BLUE}👤 Channel:{ENDC} {video_details['snippet']['channelTitle']}",
-                f"{BLUE}📅 Published:{ENDC} {self._format_date(video_details['snippet']['publishedAt'])}",
-                f"{BLUE}📊 Stats:{ENDC} {video_details['statistics'].get('viewCount', '0')} views, "
-                f"{video_details['statistics'].get('likeCount', '0')} likes",
+                "=" * 70,
+                "",
+                f"{BOLD}📺 VIDEO DETAILS{ENDC}",
+                f"{'─' * 30}",
+                f"{BLUE}Title:{ENDC} {video['snippet']['title']}",
+                f"{BLUE}Channel:{ENDC} {video['snippet']['channelTitle']}",
+                f"{BLUE}Published:{ENDC} {self._format_date(video['snippet']['publishedAt'])}",
+                f"{BLUE}Views:{ENDC} {video['statistics'].get('viewCount', '0')}",
                 "",
                 f"{BOLD}📊 SENTIMENT SUMMARY{ENDC}",
+                f"{'─' * 30}",
                 f"Overall Sentiment: {self._format_sentiment(avg_sentiment)}",
                 f"Total Comments Analyzed: {len(sentiments)}",
                 "",
-                f"{BOLD}💬 TOP COMMENTS BY SENTIMENT{ENDC}"
+                f"{BOLD}💬 TOP COMMENTS BY SENTIMENT{ENDC}",
+                f"{'─' * 30}"
             ]
 
-            # Add top positive and negative comments
-            sorted_comments = sorted(sentiments, key=lambda x: x['sentiment'], reverse=True)
-            
+            # Add top positive comments
             output.append(f"\n{GREEN}Most Positive Comments:{ENDC}")
-            for comment in sorted_comments[:3]:
+            for comment in sorted(sentiments, key=lambda x: x['sentiment'], reverse=True)[:3]:
                 output.extend([
                     f"  • {comment['text'][:100]}...",
                     f"    👤 {comment['author']} | 👍 {comment['likes']} likes | "
                     f"💭 {self._format_sentiment(comment['sentiment'])}"
                 ])
 
-            output.append(f"\n{RED}Most Negative Comments:{ENDC}")
-            for comment in sorted_comments[-3:]:
+            # Add top negative comments
+            output.append(f"\n{RED}Most Critical Comments:{ENDC}")
+            for comment in sorted(sentiments, key=lambda x: x['sentiment'])[:3]:
                 output.extend([
                     f"  • {comment['text'][:100]}...",
                     f"    👤 {comment['author']} | 👍 {comment['likes']} likes | "
                     f"💭 {self._format_sentiment(comment['sentiment'])}"
                 ])
+
+            # Add sentiment distribution
+            positive = sum(1 for s in sentiments if s['sentiment'] > 0.3)
+            negative = sum(1 for s in sentiments if s['sentiment'] < -0.3)
+            neutral = len(sentiments) - positive - negative
+            
+            output.extend([
+                "",
+                f"{BOLD}📈 SENTIMENT DISTRIBUTION{ENDC}",
+                f"{'─' * 30}",
+                f"{GREEN}Positive:{ENDC} {positive} ({positive/len(sentiments)*100:.1f}%)",
+                f"{YELLOW}Neutral:{ENDC} {neutral} ({neutral/len(sentiments)*100:.1f}%)",
+                f"{RED}Negative:{ENDC} {negative} ({negative/len(sentiments)*100:.1f}%)"
+            ])
 
             return "\n".join(output)
 
         except Exception as e:
-            return f"{RED}❌ Error analyzing comments: {str(e)}{ENDC}"
+            if "commentsDisabled" in str(e):
+                return f"{YELLOW}⚠️ Comments are disabled for this video{ENDC}"
+            elif "invalidVideoId" in str(e):
+                return f"{RED}❌ Invalid video ID{ENDC}"
+            elif "quotaExceeded" in str(e):
+                return f"{RED}❌ YouTube API quota exceeded. Please try again later.{ENDC}"
+            else:
+                return f"{RED}❌ Error analyzing comments: {str(e)}{ENDC}"
+
+    def _format_date(self, date_str: str) -> str:
+        """Format date to readable format"""
+        date = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%SZ")
+        return date.strftime("%B %d, %Y")
+
+    def _format_sentiment(self, sentiment: float) -> str:
+        """Format sentiment score with color and emoji"""
+        if sentiment > 0.3:
+            return f"{GREEN}Positive 😊 ({sentiment:.2f}){ENDC}"
+        elif sentiment < -0.3:
+            return f"{RED}Negative 😠 ({sentiment:.2f}){ENDC}"
+        return f"{YELLOW}Neutral 😐 ({sentiment:.2f}){ENDC}"
 
 if __name__ == "__main__":
-    # Test with a real YouTube video (using a popular AI-related video as example)
-    test_videos = [
-        "https://www.youtube.com/watch?v=aircAruvnKk",  # 3Blue1Brown neural networks video
-        "dQw4w9WgXcQ"  # Direct video ID
-    ]
-    
-    for video in test_videos:
-        print(f"\n{BOLD}🔍 Analyzing video: {video}{ENDC}")
-        print("=" * 80)
-        tool = CommentSentiment(video_id=video)
-        result = tool.run()
-        print(result)
-        print("=" * 80) 
+    # Test with a specific video
+    video_url = "https://www.youtube.com/watch?v=aircAruvnKk"  # Example video
+    tool = CommentSentiment(video_id=video_url)
+    print(tool.run()) 
